@@ -73,13 +73,3 @@ def train_q_learning():
         rewards_per_ep.append(total_reward)
 
     return Q, rewards_per_ep
-
-
-# ── Derived policy ────────────────────────────────────────────────────────────
-
-def get_policy(Q):
-    """
-    Extract the greedy policy from a trained Q-table.
-    Returns a dict: state_idx -> best action index.
-    """
-    return {s: int(np.argmax(Q[s])) for s in range(config.N_STATES)}
