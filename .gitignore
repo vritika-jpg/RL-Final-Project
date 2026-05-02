@@ -1,0 +1,6 @@
+# Trained model artifacts — regenerate with: python main.py
+*.npy
+
+# Python bytecode cache
+__pycache__/
+*.pyc
