@@ -11,6 +11,7 @@ import random
 import datetime
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy import stats
 import config
 from simulator import state_to_idx, idx_to_state, sample_demand
 
@@ -72,7 +73,7 @@ def step_detail(state_idx, action):
     net       = revenue - order_cost
     next_cash = min(2, cash+1) if net > 20 else (max(0, cash-1) if net < 0 else cash)
 
-    return state_to_idx(next_inv, next_dem, next_cash), reward, stockout, holding_cost
+    return state_to_idx(next_inv, next_dem, next_cash), reward, stockout, holding_cost, next_cash, revenue, order_cost
 
 
 # ── Baseline policies ─────────────────────────────────────────────────────────
@@ -89,23 +90,33 @@ def policy_order_up_to(state):
 
 def evaluate(action_fn, n_ep=N_EVAL_EP):
     ep_rewards, ep_stockouts, ep_holding = [], [], []
+    ep_ending_cash, ep_revenue, ep_order_cost = [], [], []
     for _ in range(n_ep):
         s = START
         total_r, total_so, total_hc = 0, 0, 0
+        total_rev, total_oc = 0, 0
+        ending_cash = 1
         for _ in range(STEPS):
             a = action_fn(s)
-            s, r, so, hc = step_detail(s, a)
+            s, r, so, hc, ec, rev, oc = step_detail(s, a)
             total_r += r; total_so += so; total_hc += hc
+            total_rev += rev; total_oc += oc
+            ending_cash = ec
         ep_rewards.append(total_r)
         ep_stockouts.append(total_so)
         ep_holding.append(total_hc)
+        ep_ending_cash.append(ending_cash)
+        ep_revenue.append(total_rev)
+        ep_order_cost.append(total_oc)
     return {
-        'mean_reward':   np.mean(ep_rewards),
-        'std_reward':    np.std(ep_rewards),
-        'stockout_rate': np.mean([s > 0 for s in ep_stockouts]),
-        'mean_stockout': np.mean(ep_stockouts),
-        'mean_holding':  np.mean(ep_holding),
-        'rewards':       ep_rewards,
+        'mean_reward':     np.mean(ep_rewards),
+        'std_reward':      np.std(ep_rewards),
+        'stockout_rate':   np.mean([s > 0 for s in ep_stockouts]),
+        'mean_stockout':   np.mean(ep_stockouts),
+        'mean_holding':    np.mean(ep_holding),
+        'mean_end_cash':   np.mean(ep_ending_cash),
+        'cash_efficiency': np.sum(ep_revenue) / max(1, np.sum(ep_order_cost)),
+        'rewards':         ep_rewards,
     }
 
 
@@ -118,25 +129,95 @@ Q_s       = np.load('SARSA.npy')
 rewards_s = list(np.load('rewards_sarsa.npy'))
 
 
-# ── Run all policies (Q-learning + SARSA + 4 baselines) ──────────────────────
+# ── Paired evaluation: all policies on identical demand realizations ─────────
+def evaluate_paired(policies, n_ep=N_EVAL_EP):
+    """Run all policies on the same demand sequences for fair comparison."""
+    seeds = list(range(1000, 1000 + n_ep))   # deterministic, reproducible
+    raw = {name: {'rewards': [], 'stockouts': [], 'holding': [],
+                  'ending_cash': [], 'revenue': [], 'order_cost': [],
+                  'reward_by_cash': {0: [], 1: [], 2: []}}
+           for name in policies}
+    for seed in seeds:
+        for name, action_fn in policies.items():
+            random.seed(seed)
+            np.random.seed(seed)
+            s = START
+            total_r, total_so, total_hc = 0, 0, 0
+            total_rev, total_oc = 0, 0
+            ending_cash = 1
+            for _ in range(STEPS):
+                _, _, cash_now = idx_to_state(s)
+                a = action_fn(s)
+                s, r, so, hc, ec, rev, oc = step_detail(s, a)
+                raw[name]['reward_by_cash'][cash_now].append(r)
+                total_r += r; total_so += so; total_hc += hc
+                total_rev += rev; total_oc += oc
+                ending_cash = ec
+            raw[name]['rewards'].append(total_r)
+            raw[name]['stockouts'].append(total_so)
+            raw[name]['holding'].append(total_hc)
+            raw[name]['ending_cash'].append(ending_cash)
+            raw[name]['revenue'].append(total_rev)
+            raw[name]['order_cost'].append(total_oc)
+    # Repackage into the same shape as evaluate() so downstream code still works
+    final = {}
+    for name, d in raw.items():
+        final[name] = {
+            'mean_reward':     np.mean(d['rewards']),
+            'std_reward':      np.std(d['rewards']),
+            'stockout_rate':   np.mean([s > 0 for s in d['stockouts']]),
+            'mean_stockout':   np.mean(d['stockouts']),
+            'mean_holding':    np.mean(d['holding']),
+            'mean_end_cash':   np.mean(d['ending_cash']),
+            'cash_efficiency': np.sum(d['revenue']) / max(1, np.sum(d['order_cost'])),
+            'rewards':         d['rewards'],
+            'reward_by_cash':  d['reward_by_cash'],
+        }
+    return final
 
-results = {
-    'Q-learning':     evaluate(lambda s: int(np.argmax(Q_q[s]))),
-    'SARSA':          evaluate(lambda s: int(np.argmax(Q_s[s]))),
-    'No reorder':     evaluate(policy_no_reorder),
-    'Fixed (medium)': evaluate(policy_fixed),
-    'Order-up-to':    evaluate(policy_order_up_to),
-    'Random':         evaluate(policy_random),
+policies = {
+    'Q-learning':     lambda s: int(np.argmax(Q_q[s])),
+    'SARSA':          lambda s: int(np.argmax(Q_s[s])),
+    'No reorder':     policy_no_reorder,
+    'Fixed (medium)': policy_fixed,
+    'Order-up-to':    policy_order_up_to,
+    'Random':         policy_random,
 }
+results = evaluate_paired(policies)
 
 
 # ── Print comparison table ────────────────────────────────────────────────────
 
-print(f"\n{'Policy':<20} {'Avg reward':>12} {'Std':>8} {'Stockout%':>10} {'Avg holding':>12}")
-print('-' * 66)
+print(f"\n{'Policy':<20} {'Avg reward':>10} {'Std':>8} {'Stockout%':>10} {'Holding':>10} {'EndCash':>8} {'CashEff':>8}")
+print('-' * 80)
 for name, m in results.items():
-    print(f"{name:<20} {m['mean_reward']:>12.0f} {m['std_reward']:>8.0f} "
-          f"{m['stockout_rate']*100:>9.1f}% {m['mean_holding']:>12.1f}")
+    print(f"{name:<20} {m['mean_reward']:>10.0f} {m['std_reward']:>8.0f} "
+          f"{m['stockout_rate']*100:>9.1f}% {m['mean_holding']:>10.1f} "
+          f"{m['mean_end_cash']:>8.2f} {m['cash_efficiency']:>8.2f}")
+    
+# ── Pairwise significance tests on paired rewards ────────────────────────────
+def paired_test(name_a, name_b):
+    a = np.array(results[name_a]['rewards'])
+    b = np.array(results[name_b]['rewards'])
+    diff = a - b
+    mean_diff = np.mean(diff)
+    se = np.std(diff, ddof=1) / np.sqrt(len(diff))
+    ci_low, ci_high = mean_diff - 1.96 * se, mean_diff + 1.96 * se
+    t_stat, p_val = stats.ttest_rel(a, b)
+    sig = "***" if p_val < 0.001 else "**" if p_val < 0.01 else "*" if p_val < 0.05 else "ns"
+    print(f"  {name_a:<14} vs {name_b:<16} diff={mean_diff:>+7.0f}  "
+          f"95% CI=[{ci_low:>+6.0f}, {ci_high:>+6.0f}]  p={p_val:.4f} {sig}")
+
+print("\nPaired comparisons (positive diff = first policy higher):")
+print('-' * 90)
+paired_test('Q-learning', 'SARSA')
+paired_test('Q-learning', 'Order-up-to')
+paired_test('Q-learning', 'Fixed (medium)')
+paired_test('Q-learning', 'Random')
+paired_test('Q-learning', 'No reorder')
+paired_test('SARSA',      'Order-up-to')
+print('-' * 90)
+print("Significance: *** p<0.001, ** p<0.01, * p<0.05, ns = not significant")
 
 
 # Color scheme — Q-learning purple, SARSA teal, baselines neutral gray
@@ -247,7 +328,80 @@ plt.savefig(path, dpi=150, bbox_inches='tight')
 plt.close()
 print(f'Saved: {path}')
 
-print(f'\nAll 4 charts saved to {OUT_DIR}/ with timestamp {TIMESTAMP}')
+
+# ── Chart 5: Cash efficiency comparison ──────────────────────────────────────
+# Exclude "No reorder" from cash efficiency subplot (denominator ~ 0 makes ratio meaningless)
+
+names_active   = [n for n in results.keys() if n != 'No reorder']
+ce_vals        = [results[n]['cash_efficiency'] for n in names_active]
+colors_active  = [COLOR_Q, COLOR_S, COLOR_BASE, COLOR_BASE_HL, COLOR_BASE]
+
+names_all      = list(results.keys())
+end_cash_vals  = [results[n]['mean_end_cash'] for n in names_all]
+colors_all     = [COLOR_Q, COLOR_S, COLOR_BASE, COLOR_BASE, COLOR_BASE_HL, COLOR_BASE]
+
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 4))
+
+ax1.bar(names_active, ce_vals, color=colors_active, edgecolor='white', linewidth=0.5)
+ax1.set_ylabel('Revenue per $ spent on orders')
+ax1.set_title('Cash efficiency (excl. No reorder: ratio undefined)')
+ax1.tick_params(axis='x', rotation=20)
+for i, v in enumerate(ce_vals):
+    ax1.text(i, v, f'{v:.1f}', ha='center', va='bottom', fontsize=9)
+
+ax2.bar(names_all, end_cash_vals, color=colors_all, edgecolor='white', linewidth=0.5)
+ax2.set_ylabel('Average ending cash level')
+ax2.set_title('Ending cash state (0=tight, 1=normal, 2=ample)')
+ax2.set_ylim(0, 2.2)
+ax2.tick_params(axis='x', rotation=20)
+for i, v in enumerate(end_cash_vals):
+    ax2.text(i, v, f'{v:.2f}', ha='center', va='bottom', fontsize=9)
+
+plt.tight_layout()
+path = out_path('cash_efficiency')
+plt.savefig(path, dpi=150)
+plt.close()
+print(f'Saved: {path}')
+
+
+# ── Chart 6: Per-cash-state reward breakdown ─────────────────────────────────
+# Average per-step reward when the agent acts in each cash state.
+# This is the core "RL adapts to cash constraints" visual.
+all_names    = list(results.keys())
+all_colors   = [COLOR_Q, COLOR_S, COLOR_BASE, COLOR_BASE, COLOR_BASE_HL, COLOR_BASE]
+n_policies   = len(all_names)
+x            = np.arange(len(CASH_NAMES))
+bar_w        = 0.13
+
+fig, ax = plt.subplots(figsize=(11, 4.5))
+for i, name in enumerate(all_names):
+    rbc = results[name]['reward_by_cash']
+    means = [np.mean(rbc[c]) if rbc[c] else 0 for c in range(3)]
+    counts = [len(rbc[c]) for c in range(3)]
+    offset = (i - (n_policies - 1) / 2) * bar_w
+    bars = ax.bar(x + offset, means, bar_w, color=all_colors[i],
+                  edgecolor='white', linewidth=0.5, label=name)
+    # annotate sample count under each bar (small, gray)
+    for j, (m, c) in enumerate(zip(means, counts)):
+        ax.text(x[j] + offset, m + (1 if m >= 0 else -3), f'{m:.0f}',
+                ha='center', va='bottom' if m >= 0 else 'top',
+                fontsize=7, color='#555')
+
+ax.axhline(0, color='black', linewidth=0.5, linestyle='--')
+ax.set_xticks(x)
+ax.set_xticklabels([f'{c}\n(n={sum(len(results[n]["reward_by_cash"][i]) for n in all_names)//n_policies})'
+                    for i, c in enumerate(CASH_NAMES)])
+ax.set_xlabel('Cash state when action was taken (avg sample size shown)')
+ax.set_ylabel('Average per-step reward')
+ax.set_title('Per-step reward by cash state — does the policy hold up under tight cash?')
+ax.legend(fontsize=8, ncol=3, loc='lower right')
+plt.tight_layout()
+path = out_path('reward_by_cash')
+plt.savefig(path, dpi=150)
+plt.close()
+print(f'Saved: {path}')
+
+print(f'\nAll 6 charts saved to {OUT_DIR}/ with timestamp {TIMESTAMP}')
 
 
 # ── Report ────────────────────────────────────────────────────────────────────
@@ -263,17 +417,24 @@ def write_report(results, timestamp):
     best_baseline = max(baselines, key=lambda x: x[1]['mean_reward'])
 
     # ── Learning speed: episode where smoothed reward first crosses 80% of final value ──
+    # ── Learning speed: episode where smoothed reward crosses 80% of total improvement ──
     def convergence_episode(rewards, window=100):
         smoothed = [np.mean(rewards[max(0, i-window):i+1]) for i in range(len(rewards))]
-        final    = smoothed[-1]
-        target   = 0.80 * final if final > 0 else 0.80 * max(smoothed)
-        for ep, val in enumerate(smoothed):
-            if val >= target:
+        initial = smoothed[window]                 # first stable smoothed value
+        final   = np.mean(smoothed[-500:])         # late-stage average
+        gap     = final - initial
+        if abs(gap) < 50:                          # essentially no measurable learning
+            return None
+        target = initial + 0.80 * gap
+        for ep in range(window, len(smoothed)):
+            if smoothed[ep] >= target:
                 return ep
         return len(rewards)
-
-    conv_q = convergence_episode(q['rewards'])
-    conv_s = convergence_episode(s['rewards'])
+    # IMPORTANT: use TRAINING rewards (rewards_q / rewards_s), not evaluation rewards
+    conv_q = convergence_episode(rewards_q)
+    conv_s = convergence_episode(rewards_s)
+    conv_q_str = f"episode {conv_q}" if conv_q is not None else "no clear convergence point (curve essentially flat)"
+    conv_s_str = f"episode {conv_s}" if conv_s is not None else "no clear convergence point (curve essentially flat)"
 
     # ── Reward stability: coefficient of variation (lower = more consistent) ──
     cv_q = q['std_reward'] / abs(q['mean_reward']) if q['mean_reward'] != 0 else float('inf')
@@ -317,8 +478,8 @@ def write_report(results, timestamp):
         f"and are evaluated against four baselines across 500 test episodes from a neutral start state.",
         "",
         "LEARNING CURVES",
-        f"Q-learning reached 80% of its final smoothed reward by episode {conv_q}, "
-        f"while SARSA reached the same threshold at episode {conv_s}. "
+        f"Q-learning reached 80% of its learning gap at {conv_q_str}, "
+        f"while SARSA reached the same threshold at {conv_s_str}. "
         f"{'Q-learning converged faster, consistent with off-policy learning allowing it to target the greedy policy directly during training.' if conv_q < conv_s else 'SARSA converged faster despite being on-policy, suggesting its conservative updates led to more stable early learning in this environment.'} "
         f"By the final 500 training episodes, Q-learning averaged {final_q:.0f} reward per episode "
         f"versus SARSA at {final_s:.0f}, a late-stage gap of {abs(final_q - final_s):.0f} points.",
@@ -380,7 +541,7 @@ def write_report(results, timestamp):
         f"Recommended model: {winner}.",
         f"{winner} achieves the highest average reward among RL agents ({w['mean_reward']:.0f}), "
         f"a {reward_margin:.0f}-point lead over {loser}, with a stockout rate of {w['stockout_rate']*100:.1f}% "
-        f"and holding cost of {w['mean_holding']:.0f}. It converged to a stable policy by episode {conv_q if winner == 'Q-learning' else conv_s} "
+        f"and holding cost of {w['mean_holding']:.0f}. It converged to a stable policy by {conv_q_str if winner == 'Q-learning' else conv_s_str} "
         f"and generalises sensibly across all cash states. While {best_baseline[0]} ({best_baseline[1]['mean_reward']:.0f}) "
         f"is competitive, it is a hand-crafted heuristic that ignores cash availability. "
         f"{winner} learns this behaviour from experience and is better suited for environments "
