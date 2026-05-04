@@ -7,6 +7,7 @@
 #   python evaluate_combined.py   <- loads both results, saves 4 combined charts
 
 import os
+import re
 import random
 import datetime
 import numpy as np
@@ -30,6 +31,12 @@ OUT_DIR      = 'evaluations'
 TIMESTAMP    = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
 
 os.makedirs(OUT_DIR, exist_ok=True)
+
+_TS_RE = re.compile(r'_(\d{8}_\d{6})\.(png|txt|md)$')
+for _fname in os.listdir(OUT_DIR):
+    _m = _TS_RE.search(_fname)
+    if _m and _m.group(1) != TIMESTAMP:
+        os.remove(os.path.join(OUT_DIR, _fname))
 
 
 def out_path(chart_name):
