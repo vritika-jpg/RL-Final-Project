@@ -1,4 +1,4 @@
-# Reinforcement Learning for Inventory Replenishment under Demand Uncertainty and Working Capital Constraints
+# CARL: Cash-Aware Replenishment Learner
 
 ## Problem & "Why RL?"
 

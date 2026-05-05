@@ -487,7 +487,7 @@ def write_report(results, timestamp):
                          "updates led to more stable early learning in this environment.")
 
     lines = [
-        f"# Evaluation Report — {timestamp}",
+        f"# CARL Evaluation Report — {timestamp}",
         "",
         "## Overview",
         f"This report evaluates Q-learning and SARSA trained on a 27-state inventory replenishment "
