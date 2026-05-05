@@ -6,6 +6,10 @@ from q_learning import train_q_learning
 from sarsa import train_sarsa
 
 if __name__ == "__main__":
+    print("=" * 50)
+    print("  CARL: Cash-Aware Replenishment Learner")
+    print("=" * 50)
+
     # ── Q-learning ────────────────────────────────────────────────────────────
     print("Training Q-learning...")
     Q, rewards = train_q_learning()
