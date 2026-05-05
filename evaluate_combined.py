@@ -423,32 +423,28 @@ def write_report(results, timestamp):
     baselines = [(n, m) for n, m in results.items() if n not in ('Q-learning', 'SARSA')]
     best_baseline = max(baselines, key=lambda x: x[1]['mean_reward'])
 
-    # ── Learning speed: episode where smoothed reward first crosses 80% of final value ──
-    # ── Learning speed: episode where smoothed reward crosses 80% of total improvement ──
     def convergence_episode(rewards, window=100):
         smoothed = [np.mean(rewards[max(0, i-window):i+1]) for i in range(len(rewards))]
-        initial = smoothed[window]                 # first stable smoothed value
-        final   = np.mean(smoothed[-500:])         # late-stage average
+        initial = smoothed[window]
+        final   = np.mean(smoothed[-500:])
         gap     = final - initial
-        if abs(gap) < 50:                          # essentially no measurable learning
+        if gap < 50:
             return None
         target = initial + 0.80 * gap
         for ep in range(window, len(smoothed)):
             if smoothed[ep] >= target:
                 return ep
         return len(rewards)
-    # IMPORTANT: use TRAINING rewards (rewards_q / rewards_s), not evaluation rewards
+
     conv_q = convergence_episode(rewards_q)
     conv_s = convergence_episode(rewards_s)
-    conv_q_str = f"episode {conv_q}" if conv_q is not None else "no clear convergence point (curve essentially flat)"
-    conv_s_str = f"episode {conv_s}" if conv_s is not None else "no clear convergence point (curve essentially flat)"
+    conv_q_str = f"episode {conv_q}" if conv_q is not None else "no clear convergence point detected"
+    conv_s_str = f"episode {conv_s}" if conv_s is not None else "no clear convergence point detected"
 
-    # ── Reward stability: coefficient of variation (lower = more consistent) ──
     cv_q = q['std_reward'] / abs(q['mean_reward']) if q['mean_reward'] != 0 else float('inf')
     cv_s = s['std_reward'] / abs(s['mean_reward']) if s['mean_reward'] != 0 else float('inf')
     more_stable = 'Q-learning' if cv_q <= cv_s else 'SARSA'
 
-    # ── Policy divergence: states where Q-learning and SARSA choose different actions ──
     divergent_states = []
     for state_idx in range(config.N_STATES):
         a_q = int(np.argmax(Q_q[state_idx]))
@@ -458,7 +454,6 @@ def write_report(results, timestamp):
             divergent_states.append((INV_NAMES[inv], DEM_NAMES[dem], CASH_NAMES[cash], ACTION_NAMES[a_q], ACTION_NAMES[a_s]))
     agreement_pct = (1 - len(divergent_states) / config.N_STATES) * 100
 
-    # ── Cash-state action profile: avg action chosen per cash level ──
     def avg_action_by_cash(Q_table):
         avgs = {}
         for cash_idx, cash_name in enumerate(CASH_NAMES):
@@ -470,85 +465,120 @@ def write_report(results, timestamp):
     cash_q = avg_action_by_cash(Q_q)
     cash_s = avg_action_by_cash(Q_s)
 
-    # ── Final 500-episode training avg vs overall avg (learning maturity) ──
     final_q = np.mean(q['rewards'][-500:])
     final_s = np.mean(s['rewards'][-500:])
 
+    q_most  = max(cash_q, key=cash_q.get)
+    q_least = min(cash_q, key=cash_q.get)
+    s_most  = max(cash_s, key=cash_s.get)
+    s_least = min(cash_s, key=cash_s.get)
+    q_cash_note = (" Note: ordering more aggressively under tight than ample cash is counterintuitive — "
+                   "this may reflect suboptimal convergence in cash-constrained states."
+                   if cash_q['Tight'] > cash_q['Ample'] else "")
+    s_cash_note = (" Note: ordering more aggressively under tight than ample cash is counterintuitive — "
+                   "this may reflect suboptimal convergence in cash-constrained states."
+                   if cash_s['Tight'] > cash_s['Ample'] else "")
+
+    if conv_q is not None and (conv_s is None or conv_q < conv_s):
+        converge_note = ("Q-learning converged faster, consistent with off-policy learning allowing it to "
+                         "target the greedy policy directly during training.")
+    else:
+        converge_note = ("SARSA converged faster despite being on-policy, suggesting its conservative "
+                         "updates led to more stable early learning in this environment.")
+
     lines = [
-        f"EVALUATION REPORT — {timestamp}",
-        "=" * 50,
+        f"# Evaluation Report — {timestamp}",
         "",
-        "OVERVIEW",
+        "## Overview",
         f"This report evaluates Q-learning and SARSA trained on a 27-state inventory replenishment "
-        f"problem (3 inventory x 3 demand x 3 cash levels, 4 order actions) over 5,000 episodes. "
-        f"Both algorithms use identical hyperparameters (alpha=0.1, gamma=0.95, epsilon 1.0->0.05) "
+        f"problem (3 inventory × 3 demand × 3 cash levels, 4 order actions) over 5,000 episodes. "
+        f"Both algorithms use identical hyperparameters (α=0.1, γ=0.95, ε 1.0→0.05) "
         f"and are evaluated against four baselines across 500 test episodes from a neutral start state.",
         "",
-        "LEARNING CURVES",
+        "## Learning Curves",
         f"Q-learning reached 80% of its learning gap at {conv_q_str}, "
         f"while SARSA reached the same threshold at {conv_s_str}. "
-        f"{'Q-learning converged faster, consistent with off-policy learning allowing it to target the greedy policy directly during training.' if conv_q < conv_s else 'SARSA converged faster despite being on-policy, suggesting its conservative updates led to more stable early learning in this environment.'} "
-        f"By the final 500 training episodes, Q-learning averaged {final_q:.0f} reward per episode "
-        f"versus SARSA at {final_s:.0f}, a late-stage gap of {abs(final_q - final_s):.0f} points.",
+        f"{converge_note} "
+        f"By the final 500 training episodes, Q-learning averaged **{final_q:.0f}** reward per episode "
+        f"versus SARSA at **{final_s:.0f}**, a late-stage gap of {abs(final_q - final_s):.0f} points.",
         "",
-        "REWARD COMPARISON",
-        f"Full ranking by average episode reward across 500 evaluation episodes:",
+        "## Reward Comparison",
+        "",
+        "| Rank | Policy | Avg Reward | Std | CV |",
+        "|------|--------|-----------|-----|-----|",
     ]
     for rank, (name, m) in enumerate(ranked, 1):
-        lines.append(f"  {rank}. {name:<20} avg={m['mean_reward']:>7.0f}  std={m['std_reward']:.0f}  CV={m['std_reward']/abs(m['mean_reward']):.2f}" if m['mean_reward'] != 0 else f"  {rank}. {name:<20} avg={m['mean_reward']:>7.0f}  std={m['std_reward']:.0f}")
+        cv = m['std_reward'] / abs(m['mean_reward']) if m['mean_reward'] != 0 else float('inf')
+        bold = "**" if name in ('Q-learning', 'SARSA') else ""
+        lines.append(f"| {rank} | {bold}{name}{bold} | {bold}{m['mean_reward']:.0f}{bold} | {m['std_reward']:.0f} | {cv:.2f} |")
     lines += [
-        f"",
-        f"{winner} outperforms {loser} by {reward_margin:.0f} reward points on average. "
-        f"Reward consistency (coefficient of variation): Q-learning {cv_q:.2f}, SARSA {cv_s:.2f}. "
-        f"{more_stable} produces more consistent episode-to-episode outcomes. "
+        "",
+        f"**{winner}** outperforms **{loser}** by **{reward_margin:.0f}** reward points on average. "
+        f"Reward consistency (CV): Q-learning {cv_q:.2f}, SARSA {cv_s:.2f}. "
+        f"**{more_stable}** produces more consistent episode-to-episode outcomes. "
         f"The best baseline, {best_baseline[0]} ({best_baseline[1]['mean_reward']:.0f}), is competitive "
         f"because it encodes domain-specific logic directly but cannot adapt to cash state.",
         "",
-        "STOCKOUT vs HOLDING COST",
-        f"Q-learning: {q['stockout_rate']*100:.1f}% stockout rate, {q['mean_holding']:.0f} avg holding cost.",
-        f"SARSA:      {s['stockout_rate']*100:.1f}% stockout rate, {s['mean_holding']:.0f} avg holding cost.",
+        "## Stockout vs Holding Cost",
+        "",
+        "| Policy | Stockout Rate | Avg Holding Cost |",
+        "|--------|---------------|-----------------|",
+        f"| Q-learning | {q['stockout_rate']*100:.1f}% | {q['mean_holding']:.0f} |",
+        f"| SARSA | {s['stockout_rate']*100:.1f}% | {s['mean_holding']:.0f} |",
     ]
     for name, m in baselines:
-        lines.append(f"{name:<16} {m['stockout_rate']*100:.1f}% stockout rate, {m['mean_holding']:.0f} avg holding cost.")
+        lines.append(f"| {name} | {m['stockout_rate']*100:.1f}% | {m['mean_holding']:.0f} |")
     lines += [
-        f"",
+        "",
         f"The no-reorder policy's low holding cost ({results['No reorder']['mean_holding']:.0f}) is "
-        f"misleading — it reflects zero inventory replenishment, not efficiency. Its {results['No reorder']['stockout_rate']*100:.1f}% "
-        f"stockout rate and negative average reward confirm it is not viable. Among active policies, "
-        f"{'Q-learning achieves a lower stockout rate than SARSA' if q['stockout_rate'] < s['stockout_rate'] else 'SARSA achieves a lower stockout rate than Q-learning'} "
-        f"({min(q['stockout_rate'], s['stockout_rate'])*100:.1f}% vs {max(q['stockout_rate'], s['stockout_rate'])*100:.1f}%), "
+        f"misleading — it reflects zero inventory replenishment, not efficiency. Its "
+        f"{results['No reorder']['stockout_rate']*100:.1f}% stockout rate and negative average reward "
+        f"confirm it is not viable. Among active policies, "
+        f"{'**Q-learning** achieves a lower stockout rate than SARSA' if q['stockout_rate'] < s['stockout_rate'] else '**SARSA** achieves a lower stockout rate than Q-learning'} "
+        f"({min(q['stockout_rate'], s['stockout_rate'])*100:.1f}% vs "
+        f"{max(q['stockout_rate'], s['stockout_rate'])*100:.1f}%), "
         f"indicating it learned a more proactive replenishment strategy.",
         "",
-        "POLICY DIVERGENCE ANALYSIS",
+        "## Policy Divergence Analysis",
         f"Across all 27 states, Q-learning and SARSA agree on the same action in "
-        f"{agreement_pct:.0f}% of states ({27 - len(divergent_states)}/27). "
+        f"**{agreement_pct:.0f}%** of states ({27 - len(divergent_states)}/27). "
         f"The {len(divergent_states)} divergent states are:",
+        "",
+        "| Inventory | Demand | Cash | Q-learning | SARSA |",
+        "|-----------|--------|------|------------|-------|",
     ]
     if divergent_states:
         for inv_n, dem_n, cash_n, aq, as_ in divergent_states:
-            lines.append(f"  inv={inv_n:<4} dem={dem_n:<7} cash={cash_n:<7}  Q-learning={aq:<10} SARSA={as_}")
+            lines.append(f"| {inv_n} | {dem_n} | {cash_n} | {aq} | {as_} |")
     else:
-        lines.append("  None — both algorithms learned identical greedy policies.")
+        lines.append("_Both algorithms learned identical greedy policies._")
     lines += [
-        f"",
+        "",
         f"Divergence tends to occur under ambiguous mid-range states where the optimal action "
         f"is less clear-cut, reflecting the fundamental difference between off-policy (Q-learning) "
         f"and on-policy (SARSA) value estimation.",
         "",
-        "CASH-STATE ACTION PROFILE",
-        f"Average action index by cash level (0=no order, 3=large order):",
-        f"  Q-learning: Tight={cash_q['Tight']:.2f}, Normal={cash_q['Normal']:.2f}, Ample={cash_q['Ample']:.2f}",
-        f"  SARSA:      Tight={cash_s['Tight']:.2f}, Normal={cash_s['Normal']:.2f}, Ample={cash_s['Ample']:.2f}",
-        f"Both agents correctly order less aggressively under tight cash. "
-        f"{'Q-learning orders more aggressively under ample cash' if cash_q['Ample'] > cash_s['Ample'] else 'SARSA orders more aggressively under ample cash'} "
-        f"(avg action {max(cash_q['Ample'], cash_s['Ample']):.2f} vs {min(cash_q['Ample'], cash_s['Ample']):.2f}), "
-        f"consistent with its {'off' if cash_q['Ample'] > cash_s['Ample'] else 'on'}-policy optimism.",
+        "## Cash-State Action Profile",
+        "Average action index by cash level (0 = no order, 3 = large order):",
         "",
-        "RECOMMENDATION",
-        f"Recommended model: {winner}.",
+        "| Algorithm | Tight | Normal | Ample |",
+        "|-----------|-------|--------|-------|",
+        f"| Q-learning | {cash_q['Tight']:.2f} | {cash_q['Normal']:.2f} | {cash_q['Ample']:.2f} |",
+        f"| SARSA | {cash_s['Tight']:.2f} | {cash_s['Normal']:.2f} | {cash_s['Ample']:.2f} |",
+        "",
+        f"Q-learning orders most aggressively under **{q_most}** cash ({cash_q[q_most]:.2f}) "
+        f"and least under **{q_least}** cash ({cash_q[q_least]:.2f}).{q_cash_note} "
+        f"SARSA orders most aggressively under **{s_most}** cash ({cash_s[s_most]:.2f}) "
+        f"and least under **{s_least}** cash ({cash_s[s_least]:.2f}).{s_cash_note}",
+        "",
+        "## Recommendation",
+        "",
+        f"**Recommended model: {winner}.**",
+        "",
         f"{winner} achieves the highest average reward among RL agents ({w['mean_reward']:.0f}), "
         f"a {reward_margin:.0f}-point lead over {loser}, with a stockout rate of {w['stockout_rate']*100:.1f}% "
-        f"and holding cost of {w['mean_holding']:.0f}. It converged to a stable policy by {conv_q_str if winner == 'Q-learning' else conv_s_str} "
+        f"and holding cost of {w['mean_holding']:.0f}. "
+        f"It converged to a stable policy by {conv_q_str if winner == 'Q-learning' else conv_s_str} "
         f"and generalises sensibly across all cash states. While {best_baseline[0]} ({best_baseline[1]['mean_reward']:.0f}) "
         f"is competitive, it is a hand-crafted heuristic that ignores cash availability. "
         f"{winner} learns this behaviour from experience and is better suited for environments "
@@ -558,7 +588,7 @@ def write_report(results, timestamp):
     report = "\n".join(lines)
     word_count = len(report.split())
 
-    path = os.path.join(OUT_DIR, f'report_{timestamp}.txt')
+    path = os.path.join(OUT_DIR, f'report_{timestamp}.md')
     with open(path, 'w', encoding='utf-8') as f:
         f.write(report)
     print(f'Saved: {path}  ({word_count} words)')

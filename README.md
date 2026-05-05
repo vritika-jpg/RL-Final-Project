@@ -1,72 +1,89 @@
 # Reinforcement Learning for Inventory Replenishment under Demand Uncertainty and Working Capital Constraints
 
 ## Problem & "Why RL?"
-We study a multi-period inventory replenishment problem in which a firm must decide how much inventory to reorder each period under uncertain demand. The goal is to maximize long-run business performance by balancing sales revenue against stockout risk, holding cost, ordering cost, and cash tied up in inventory.
-This problem requires Reinforcement Learning because it is a sequential decision-making problem under uncertainty, not a one-time prediction problem. A replenishment decision made today changes future inventory levels, future stockout exposure, future holding costs, and future cash availability. Therefore, the quality of an action cannot be judged only by its immediate effect; it must be evaluated based on its impact on the full future trajectory of the system.
+
+We studied a multi-period inventory replenishment problem in which a firm decides how much inventory to reorder each period under uncertain demand. The goal was to maximize long-run business performance by balancing sales revenue against stockout risk, holding cost, ordering cost, and cash tied up in inventory.
+
+This problem requires Reinforcement Learning because it is a sequential decision-making problem under uncertainty. A replenishment decision made today changes future inventory levels, stockout exposure, holding costs, and cash availability — the quality of an action cannot be judged by its immediate effect alone.
 
 ## MDP Formulation
 
-State Space:
+### State Space
 
-We will use a finite, discrete state space suitable for tabular RL. A state at time (t) will be defined as:
+A finite, discrete state space of 27 states — the Cartesian product of:
 
-  Inventory level: low / medium / high
-  
-  Demand condition: low / normal / high
-  
-  Cash availability: tight / normal / ample
-  
-Thus, the state summarizes the operational and financial information needed to make a replenishment decision.
+- **Inventory level**: low / medium / high
+- **Demand condition**: low / normal / high
+- **Cash availability**: tight / normal / ample
 
-Action Space:
+### Action Space
 
-  At each period, the agent chooses a discrete reorder quantity:
-    
-    - 0 units
-    
-    - Small order
-    
-    - Medium order
-    
-    - Large order
+At each period, the agent chose a discrete reorder quantity:
 
-This keeps the action space finite and executable within a tabular framework.
+- 0 units (no order)
+- Small order (5 units)
+- Medium order (10 units)
+- Large order (20 units)
 
-Reward Function:
+### Reward Function
 
-The reward at each period will be defined as:
+```
+Reward = Sales Revenue − Ordering Cost − Holding Cost − Stockout Penalty − Excess Inventory Penalty
+```
 
-Reward=Sales Revenue−Ordering Cost−Holding Cost−Stockout Penalty
+This reward structure encouraged the agent to maintain profitable inventory levels while avoiding both understocking and overstocking.
 
-We may also include a small penalty for excessive inventory to reflect working capital inefficiency. This reward structure encourages the agent to maintain profitable inventory levels while avoiding both understocking and overstocking.
+## Environment
 
-## Environment and Data Strategy
+We built a custom simulator in which stochastic demand is generated each period via a Poisson distribution conditioned on the current demand state. Inventory updates based on realized sales and replenishment, and cash availability evolves based on net revenue from each period.
 
-We plan to build a custom simulator rather than rely on a closed-form model. In each period, stochastic demand will be generated based on the current demand condition, inventory will be updated based on realized sales and replenishment, and cash availability will evolve depending on the ordering decision and realized revenue.
-This approach is appropriate because the environment is naturally sequential and uncertain, and the simulator allows us to generate many episodes for learning. It also matches the course emphasis on model-free RL methods when transition probabilities are not assumed to be explicitly known.
+## Algorithms
 
-## Baselines and Evaluation
+Two tabular RL algorithms were implemented and compared:
 
-  We will compare the trained RL agent against several baseline policies:
-  
-    - No reorder policy
-    
-    - Fixed reorder policy (always order the same quantity)
-    
-    - Order-up-to heuristic (replenish to a fixed target level)
-    
-    - Random actions policy with realistic action constraints
+- **Q-learning** — off-policy TD control; updates Q-values using the greedy next action (max Q), regardless of what action the agent actually takes
+- **SARSA** — on-policy TD control; updates Q-values using the action the agent actually takes next
 
-The RL agent will be evaluated using:
+Both used identical hyperparameters: α = 0.1, γ = 0.95, ε decaying linearly from 1.0 → 0.05 over 5,000 training episodes of 50 steps each.
 
-  - Average total profit per episode
-  
-  - Stockout frequency / service level
-  
-  - Average holding cost
-  
-  - Average ending inventory / cash efficiency
+## Baselines
 
-We expect the RL agent to outperform simple heuristic and random policies by learning a state-dependent replenishment strategy that better balances profitability, risk, and inventory efficiency over time.
+Trained RL agents were evaluated against four baseline policies:
 
+- **No reorder** — never orders inventory
+- **Fixed** — always places a medium order (10 units)
+- **Order-up-to** — orders based on current inventory level: low → large, mid → small, high → nothing
+- **Random** — selects a uniformly random action each step
 
+## Results
+
+| Policy | Avg Reward | Stockout Rate | Avg Holding Cost |
+|---|---|---|---|
+| Order-up-to | 3035 | 62.2% | 1115 |
+| **Q-learning** | **3026** | **65.4%** | **1081** |
+| Random | 2445 | 68.6% | 1079 |
+| SARSA | 2323 | 69.0% | 1095 |
+| Fixed (medium) | 2252 | 66.6% | 1106 |
+| No reorder | −1011 | 91.2% | 370 |
+
+Q-learning achieved the highest reward among RL algorithms, outperforming SARSA by 703 reward points. It matched the hand-crafted Order-up-to heuristic (3035 vs 3026) while additionally learning to adapt to cash availability — something the heuristic cannot do.
+
+## How to Run
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Train both algorithms (saves `Q.npy`, `SARSA.npy`, `rewards.npy`, `rewards_sarsa.npy`):
+
+```bash
+python main.py
+```
+
+Generate evaluation charts and report (saved to `evaluations/`):
+
+```bash
+python evaluate_combined.py
+```
