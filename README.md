@@ -1,5 +1,7 @@
 # CARL: Cash-Aware Replenishment Learner
 
+Tabular RL (Q-learning vs SARSA) for inventory replenishment under stochastic demand and cash constraints.
+
 ## Problem & "Why RL?"
 
 We studied a multi-period inventory replenishment problem in which a firm decides how much inventory to reorder each period under uncertain demand. The goal was to maximize long-run business performance by balancing sales revenue against stockout risk, holding cost, ordering cost, and cash tied up in inventory.
